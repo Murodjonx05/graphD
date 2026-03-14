@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react"
+import { useCallback, useEffect, useRef, useState } from "react"
 
 type Point = {
   x: number
@@ -64,6 +64,8 @@ type NodeResizeState = {
   startClientY: number
   startWidth: number
   startHeight: number
+  minWidth: number
+  minHeight: number
 }
 
 type SelectionTool = "square" | "circle" | "draw"
@@ -75,6 +77,23 @@ type SelectionState = {
   current: Point
   points: Point[]
 }
+
+type Size = {
+  width: number
+  height: number
+}
+
+type PendingNodeTransform =
+  | {
+      mode: "resize"
+      id: string
+      width: number
+      height: number
+    }
+  | {
+      mode: "drag"
+      positions: Record<string, Point>
+    }
 
 type EditingField =
   | { kind: "title" | "body"; nodeId: string }
@@ -385,10 +404,15 @@ function drawWebGrid(
 function InfiniteCanvas() {
   const canvasRef = useRef<HTMLCanvasElement | null>(null)
   const containerRef = useRef<HTMLDivElement | null>(null)
+  const nodesRef = useRef<CanvasNode[]>([])
   const dragOriginRef = useRef<Point | null>(null)
   const nodeDragRef = useRef<NodeDragState | null>(null)
   const nodeResizeRef = useRef<NodeResizeState | null>(null)
   const selectionRef = useRef<SelectionState | null>(null)
+  const contentObserverRef = useRef<ResizeObserver | null>(null)
+  const contentElementsRef = useRef(new Map<string, HTMLElement>())
+  const nodeTransformFrameRef = useRef<number | null>(null)
+  const pendingNodeTransformRef = useRef<PendingNodeTransform | null>(null)
   const [grid, setGrid] = useState<GridSettings>(DEFAULT_GRID)
   const [offset, setOffset] = useState<Point>({ x: 0, y: 0 })
   const [viewport, setViewport] = useState({ width: 0, height: 0 })
@@ -402,9 +426,15 @@ function InfiniteCanvas() {
   const [selectionState, setSelectionState] = useState<SelectionState | null>(null)
   const [clipboardNodes, setClipboardNodes] = useState<CanvasNode[]>([])
   const [editingField, setEditingField] = useState<EditingField | null>(null)
+  const [editingValue, setEditingValue] = useState("")
+  const [contentMinSizes, setContentMinSizes] = useState<Record<string, Size>>({})
 
   const selectedNodeId = selectedNodeIds[0] ?? null
   const selectedNode = nodes.find((node) => node.id === selectedNodeId) ?? null
+
+  useEffect(() => {
+    nodesRef.current = nodes
+  }, [nodes])
 
   const stopCanvasPan = (event: React.PointerEvent<HTMLElement>) => {
     event.stopPropagation()
@@ -446,6 +476,61 @@ function InfiniteCanvas() {
   }, [])
 
   useEffect(() => {
+    return () => {
+      if (nodeTransformFrameRef.current !== null) {
+        cancelAnimationFrame(nodeTransformFrameRef.current)
+      }
+    }
+  }, [])
+
+  useEffect(() => {
+    const observer = new ResizeObserver((entries) => {
+      setContentMinSizes((current) => {
+        let changed = false
+        const next = { ...current }
+
+        for (const entry of entries) {
+          const element = entry.target as HTMLElement
+          const nodeId = element.dataset.nodeContentId
+
+          if (!nodeId) {
+            continue
+          }
+
+          if (nodeResizeRef.current?.id === nodeId) {
+            continue
+          }
+
+          const node = nodesRef.current.find((currentNode) => currentNode.id === nodeId)
+          const previous = current[nodeId]
+          const contentWidth = Math.ceil(Math.max(80, element.scrollWidth))
+          const contentHeight = Math.ceil(Math.max(80, element.scrollHeight))
+
+          const width = node?.autoSize
+            ? contentWidth
+            : Math.max(80, previous?.width ?? contentWidth)
+          const height = Math.max(80, previous?.height ?? 80, contentHeight)
+
+          if (!previous || previous.width !== width || previous.height !== height) {
+            next[nodeId] = { width, height }
+            changed = true
+          }
+        }
+
+        return changed ? next : current
+      })
+    })
+
+    contentObserverRef.current = observer
+    contentElementsRef.current.forEach((element) => observer.observe(element))
+
+    return () => {
+      observer.disconnect()
+      contentObserverRef.current = null
+    }
+  }, [])
+
+  useEffect(() => {
     const root = document.documentElement
     const observer = new MutationObserver(() => {
       setThemeVersion((current) => current + 1)
@@ -468,6 +553,76 @@ function InfiniteCanvas() {
     }
   }, [])
 
+  const getNodeContentMinSize = useCallback((node: CanvasNode) => {
+    const measured = contentMinSizes[node.id]
+
+    return {
+      width: Math.max(80, measured ? measured.width : 80),
+      height: Math.max(80, measured ? measured.height : 80),
+    }
+  }, [contentMinSizes])
+
+  const getEffectiveNodeSize = useCallback((node: CanvasNode) => {
+    const minSize = getNodeContentMinSize(node)
+
+    return {
+      width: Math.max(node.width, minSize.width),
+      height: Math.max(node.height, minSize.height),
+    }
+  }, [getNodeContentMinSize])
+
+  const nodesOverlap = (
+    first: { x: number; y: number; width: number; height: number },
+    second: { x: number; y: number; width: number; height: number },
+    gap = 24
+  ) =>
+    Math.abs(first.x - second.x) < (first.width + second.width) / 2 + gap &&
+    Math.abs(first.y - second.y) < (first.height + second.height) / 2 + gap
+
+  const findOpenPositionForNode = useCallback((
+    node: CanvasNode,
+    existingNodes: CanvasNode[],
+    preferred: Point
+  ) => {
+    const size = getEffectiveNodeSize(node)
+    const step = Math.max(grid.distance * 1.5, size.width + 32)
+    const maxAttempts = 64
+
+    const collidesAt = (candidateX: number, candidateY: number) =>
+      existingNodes.some((existingNode) => {
+        const existingSize = getEffectiveNodeSize(existingNode)
+
+        return nodesOverlap(
+          { x: candidateX, y: candidateY, width: size.width, height: size.height },
+          {
+            x: existingNode.x,
+            y: existingNode.y,
+            width: existingSize.width,
+            height: existingSize.height,
+          }
+        )
+      })
+
+    if (!collidesAt(preferred.x, preferred.y)) {
+      return preferred
+    }
+
+    for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+      const rightCandidate = { x: preferred.x + step * attempt, y: preferred.y }
+      const leftCandidate = { x: preferred.x - step * attempt, y: preferred.y }
+
+      if (!collidesAt(rightCandidate.x, rightCandidate.y)) {
+        return rightCandidate
+      }
+
+      if (!collidesAt(leftCandidate.x, leftCandidate.y)) {
+        return leftCandidate
+      }
+    }
+
+    return { x: preferred.x + step * (maxAttempts + 1), y: preferred.y }
+  }, [getEffectiveNodeSize, grid.distance])
+
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
       const isCopy = (event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "c"
@@ -484,15 +639,31 @@ function InfiniteCanvas() {
 
       if (isPaste && clipboardNodes.length > 0) {
         event.preventDefault()
-        const duplicates = clipboardNodes.map((node, index) => ({
-          ...node,
-          id: `${node.type}-${crypto.randomUUID()}`,
-          x: node.x + 32 + index * 8,
-          y: node.y + 32 + index * 8,
-        }))
+        setNodes((current) => {
+          const placedNodes = [...current]
+          const duplicates = clipboardNodes.map((node, index) => {
+            const duplicate = {
+              ...node,
+              id: `${node.type}-${crypto.randomUUID()}`,
+            }
+            const preferred = {
+              x: node.x + 48 + index * 12,
+              y: node.y,
+            }
+            const position = findOpenPositionForNode(duplicate, placedNodes, preferred)
+            const placedNode = {
+              ...duplicate,
+              x: position.x,
+              y: position.y,
+            }
 
-        setNodes((current) => [...current, ...duplicates])
-        setSelectedNodeIds(duplicates.map((node) => node.id))
+            placedNodes.push(placedNode)
+            return placedNode
+          })
+
+          setSelectedNodeIds(duplicates.map((node) => node.id))
+          return placedNodes
+        })
       }
     }
 
@@ -501,7 +672,7 @@ function InfiniteCanvas() {
     return () => {
       window.removeEventListener("keydown", handleKeyDown)
     }
-  }, [clipboardNodes, nodes, selectedNodeIds])
+  }, [clipboardNodes, findOpenPositionForNode, nodes, selectedNodeIds])
 
   useEffect(() => {
     const canvas = canvasRef.current
@@ -546,8 +717,9 @@ function InfiniteCanvas() {
     const scale = getNodeScale()
     const centerX = viewport.width / 2 + offset.x + node.x * zoom
     const centerY = viewport.height / 2 + offset.y + node.y * zoom
-    const width = node.width * scale
-    const height = node.height * scale
+    const effectiveSize = getEffectiveNodeSize(node)
+    const width = effectiveSize.width * scale
+    const height = effectiveSize.height * scale
 
     return {
       centerX,
@@ -559,6 +731,64 @@ function InfiniteCanvas() {
       top: centerY - height / 2,
       bottom: centerY + height / 2,
     }
+  }
+
+  const setNodeContentElement = (nodeId: string, element: HTMLElement | null) => {
+    const previous = contentElementsRef.current.get(nodeId)
+
+    if (previous && previous !== element) {
+      contentObserverRef.current?.unobserve(previous)
+      contentElementsRef.current.delete(nodeId)
+    }
+
+    if (element) {
+      contentElementsRef.current.set(nodeId, element)
+      contentObserverRef.current?.observe(element)
+    }
+  }
+
+  const flushPendingNodeTransform = () => {
+    const pending = pendingNodeTransformRef.current
+
+    if (!pending) {
+      nodeTransformFrameRef.current = null
+      return
+    }
+
+    setNodes((current) =>
+      current.map((node) => {
+        if (pending.mode === "resize") {
+          return node.id === pending.id
+            ? {
+                ...node,
+                width: pending.width,
+                height: pending.height,
+                autoSize: false,
+              }
+            : node
+        }
+
+        const nextPosition = pending.positions[node.id]
+        return nextPosition
+          ? {
+              ...node,
+              x: nextPosition.x,
+              y: nextPosition.y,
+            }
+          : node
+      })
+    )
+
+    pendingNodeTransformRef.current = null
+    nodeTransformFrameRef.current = null
+  }
+
+  const scheduleNodeTransformFlush = () => {
+    if (nodeTransformFrameRef.current !== null) {
+      return
+    }
+
+    nodeTransformFrameRef.current = requestAnimationFrame(flushPendingNodeTransform)
   }
 
   const isNodeInsideSelection = (node: CanvasNode, currentSelection: SelectionState) => {
@@ -625,6 +855,7 @@ function InfiniteCanvas() {
       setMenu(null)
       setSelectedNodeIds([])
       setEditingField(null)
+      setEditingValue("")
       const nextSelection = {
         pointerId: event.pointerId,
         tool: selectionTool,
@@ -645,6 +876,7 @@ function InfiniteCanvas() {
     event.preventDefault()
     setMenu(null)
     setEditingField(null)
+    setEditingValue("")
     dragOriginRef.current = {
       x: event.clientX - offset.x,
       y: event.clientY - offset.y,
@@ -659,19 +891,19 @@ function InfiniteCanvas() {
     if (nodeResize) {
       const deltaX = (event.clientX - nodeResize.startClientX) / zoom
       const deltaY = (event.clientY - nodeResize.startClientY) / zoom
+      const resizedNode = nodes.find((node) => node.id === nodeResize.id)
 
-      setNodes((current) =>
-        current.map((node) =>
-          node.id === nodeResize.id
-            ? {
-                ...node,
-                width: clamp(nodeResize.startWidth + deltaX, 80, 720),
-                height: clamp(nodeResize.startHeight + deltaY, 80, 720),
-                autoSize: false,
-              }
-            : node
-        )
-      )
+    if (!resizedNode) {
+      return
+    }
+
+      pendingNodeTransformRef.current = {
+        mode: "resize",
+        id: nodeResize.id,
+        width: clamp(nodeResize.startWidth + deltaX, nodeResize.minWidth, 720),
+        height: clamp(nodeResize.startHeight + deltaY, nodeResize.minHeight, 720),
+      }
+      scheduleNodeTransformFlush()
       return
     }
 
@@ -680,18 +912,19 @@ function InfiniteCanvas() {
     if (nodeDrag) {
       const deltaX = (event.clientX - nodeDrag.startClientX) / zoom
       const deltaY = (event.clientY - nodeDrag.startClientY) / zoom
-
-      setNodes((current) =>
-        current.map((node) =>
-          nodeDrag.ids.includes(node.id)
-            ? {
-                ...node,
-                x: nodeDrag.startPositions[node.id].x + deltaX,
-                y: nodeDrag.startPositions[node.id].y + deltaY,
-              }
-            : node
-        )
-      )
+      pendingNodeTransformRef.current = {
+        mode: "drag",
+        positions: Object.fromEntries(
+          nodeDrag.ids.map((id) => [
+            id,
+            {
+              x: nodeDrag.startPositions[id].x + deltaX,
+              y: nodeDrag.startPositions[id].y + deltaY,
+            },
+          ])
+        ),
+      }
+      scheduleNodeTransformFlush()
       return
     }
 
@@ -737,12 +970,14 @@ function InfiniteCanvas() {
     }
 
     if (nodeResizeRef.current?.pointerId === event.pointerId) {
+      flushPendingNodeTransform()
       nodeResizeRef.current = null
       event.currentTarget.releasePointerCapture(event.pointerId)
       return
     }
 
     if (nodeDragRef.current?.pointerId === event.pointerId) {
+      flushPendingNodeTransform()
       nodeDragRef.current = null
       event.currentTarget.releasePointerCapture(event.pointerId)
       return
@@ -801,8 +1036,20 @@ function InfiniteCanvas() {
     }
 
     const newNode = createDefaultNode(type, menu.worldX, menu.worldY)
-    setNodes((current) => [...current, newNode])
-    setSelectedNodeIds([newNode.id])
+    setNodes((current) => {
+      const position = findOpenPositionForNode(newNode, current, {
+        x: menu.worldX,
+        y: menu.worldY,
+      })
+      const placedNode = {
+        ...newNode,
+        x: position.x,
+        y: position.y,
+      }
+
+      setSelectedNodeIds([placedNode.id])
+      return [...current, placedNode]
+    })
     setMenu(null)
   }
 
@@ -822,6 +1069,7 @@ function InfiniteCanvas() {
     selectionRef.current = null
     setSelectionState(null)
     setEditingField(null)
+    setEditingValue("")
     nodeDragRef.current = {
       ids: activeIds,
       pointerId: event.pointerId,
@@ -853,11 +1101,14 @@ function InfiniteCanvas() {
       return
     }
 
+    const minSize = getNodeContentMinSize(node)
+
     event.stopPropagation()
     event.preventDefault()
     setSelectedNodeIds([node.id])
     setMenu(null)
     setEditingField(null)
+    setEditingValue("")
     nodeResizeRef.current = {
       id: node.id,
       pointerId: event.pointerId,
@@ -865,6 +1116,8 @@ function InfiniteCanvas() {
       startClientY: event.clientY,
       startWidth: node.width,
       startHeight: node.height,
+      minWidth: minSize.width,
+      minHeight: minSize.height,
     }
     containerRef.current?.setPointerCapture(event.pointerId)
   }
@@ -891,17 +1144,33 @@ function InfiniteCanvas() {
     )
   }
 
-  const getNodeSurfaceStyle = (node: CanvasNode) => ({
-    backgroundColor: node.backgroundColor,
-    opacity: node.opacity,
-    color: node.textColor,
-    fontSize: `${node.textSize}px`,
-    fontWeight: node.textWeight,
-    width: node.autoSize ? "fit-content" : `${node.width}px`,
-    height: node.autoSize ? "fit-content" : `${node.height}px`,
-    minWidth: `${node.width}px`,
-    minHeight: `${node.height}px`,
-  })
+  const getNodeSurfaceStyle = (node: CanvasNode) => {
+    const isFlexibleHeightNode =
+      node.type === "square-body" ||
+      node.type === "square-title-body" ||
+      node.type === "square-table" ||
+      node.type === "square-list-column"
+    const effectiveSize = getEffectiveNodeSize(node)
+
+    return {
+      backgroundColor: node.backgroundColor,
+      opacity: node.opacity,
+      color: node.textColor,
+      fontSize: `${node.textSize}px`,
+      fontWeight: node.textWeight,
+      width: node.autoSize ? "fit-content" : `${effectiveSize.width}px`,
+      height: isFlexibleHeightNode ? "auto" : node.autoSize ? "fit-content" : `${effectiveSize.height}px`,
+      minWidth: `${effectiveSize.width}px`,
+      minHeight: `${effectiveSize.height}px`,
+      maxWidth: node.autoSize ? "max-content" : `${effectiveSize.width}px`,
+      maxHeight: isFlexibleHeightNode
+        ? "none"
+        : node.autoSize
+          ? "max-content"
+          : `${effectiveSize.height}px`,
+      overflow: "hidden",
+    }
+  }
 
   const getNodeTextStyle = (node: CanvasNode) => ({
     color: node.textColor,
@@ -919,7 +1188,13 @@ function InfiniteCanvas() {
     const isEditing = JSON.stringify(editingField) === JSON.stringify(field)
 
     if (isEditing) {
+      const resizeEditor = (element: HTMLTextAreaElement) => {
+        element.style.height = "0px"
+        element.style.height = `${element.scrollHeight}px`
+      }
+
       const updateFieldValue = (nextValue: string) => {
+        setEditingValue(nextValue)
         updateNode(node.id, (current) => {
           if (field.kind === "title") {
             return { ...current, title: nextValue }
@@ -968,40 +1243,45 @@ function InfiniteCanvas() {
         })
       }
 
-      if (field.kind === "body") {
-        return (
-          <textarea
-            autoFocus
-            rows={3}
-            value={value}
-            onPointerDown={(event) => event.stopPropagation()}
-            onClick={(event) => event.stopPropagation()}
-            onChange={(event) => updateFieldValue(event.target.value)}
-            onBlur={() => setEditingField(null)}
-            onKeyDown={(event) => {
-              if ((event.metaKey || event.ctrlKey) && event.key === "Enter") {
-                setEditingField(null)
-              }
-            }}
-            className={`${className} min-h-[72px] w-full resize-none rounded-xl bg-background/85 px-2 py-1.5 outline-none ring-1 ring-sky-500/50`}
-          />
-        )
-      }
-
       return (
-        <input
+        <textarea
           autoFocus
-          value={value}
+          rows={1}
+          value={editingValue}
           onPointerDown={(event) => event.stopPropagation()}
           onClick={(event) => event.stopPropagation()}
-          onChange={(event) => updateFieldValue(event.target.value)}
-          onBlur={() => setEditingField(null)}
+          onChange={(event) => {
+            updateFieldValue(event.target.value)
+            resizeEditor(event.target)
+          }}
+          onBlur={() => {
+            setEditingField(null)
+            setEditingValue("")
+          }}
           onKeyDown={(event) => {
-            if (event.key === "Enter") {
+            if (field.kind !== "body" && event.key === "Enter") {
+              event.preventDefault()
               setEditingField(null)
+              setEditingValue("")
+            }
+
+            if ((event.metaKey || event.ctrlKey) && event.key === "Enter") {
+              event.preventDefault()
+              setEditingField(null)
+              setEditingValue("")
             }
           }}
-          className={`${className} rounded-lg bg-background/85 px-1.5 py-1 outline-none ring-1 ring-sky-500/50`}
+          ref={(element) => {
+            if (!element) {
+              return
+            }
+
+            queueMicrotask(() => {
+              resizeEditor(element)
+              element.setSelectionRange(element.value.length, element.value.length)
+            })
+          }}
+          className={`${className} block h-auto w-full min-w-0 resize-none overflow-hidden whitespace-pre-wrap break-words [overflow-wrap:anywhere] border-0 bg-transparent p-0 leading-[inherit] outline-none ring-0`}
         />
       )
     }
@@ -1013,8 +1293,9 @@ function InfiniteCanvas() {
         onDoubleClick={(event) => {
           event.stopPropagation()
           setEditingField(field)
+          setEditingValue(value)
         }}
-        className={`${className} select-none text-inherit`}
+        className={`${className} block w-full min-w-0 whitespace-pre-wrap break-words [overflow-wrap:anywhere] select-none text-inherit`}
       >
         {value}
       </button>
@@ -1063,6 +1344,8 @@ function InfiniteCanvas() {
                 <div
                   className="cursor-move rounded-2xl border border-border/80 p-4 shadow-lg backdrop-blur select-none"
                   style={getNodeSurfaceStyle(node)}
+                  ref={(element) => setNodeContentElement(node.id, element)}
+                  data-node-content-id={node.id}
                 >
                   {renderEditableText(
                     node,
@@ -1075,8 +1358,10 @@ function InfiniteCanvas() {
 
               {node.type === "square-title-body" && (
                 <div
-                  className="cursor-move rounded-2xl border border-border/80 p-4 shadow-lg backdrop-blur select-none"
+                  className="flex cursor-move flex-col gap-2 rounded-2xl border border-border/80 p-4 shadow-lg backdrop-blur select-none"
                   style={getNodeSurfaceStyle(node)}
+                  ref={(element) => setNodeContentElement(node.id, element)}
+                  data-node-content-id={node.id}
                 >
                   {renderEditableText(
                     node,
@@ -1097,6 +1382,8 @@ function InfiniteCanvas() {
                 <div
                   className="cursor-move rounded-2xl border border-border/80 p-4 shadow-lg backdrop-blur select-none"
                   style={getNodeSurfaceStyle(node)}
+                  ref={(element) => setNodeContentElement(node.id, element)}
+                  data-node-content-id={node.id}
                 >
                   <div className="mb-2 flex items-center justify-between gap-2">
                     {renderEditableText(
@@ -1187,6 +1474,8 @@ function InfiniteCanvas() {
                 <div
                   className="cursor-move rounded-2xl border border-border/80 p-4 shadow-lg backdrop-blur select-none"
                   style={getNodeSurfaceStyle(node)}
+                  ref={(element) => setNodeContentElement(node.id, element)}
+                  data-node-content-id={node.id}
                 >
                   <div className="mb-3 flex items-center justify-between gap-2">
                     {renderEditableText(
@@ -1214,14 +1503,62 @@ function InfiniteCanvas() {
                     {node.tableRows.map((row, rowIndex) => (
                       <div
                         key={`${node.id}-list-item-${rowIndex}`}
-                        className="rounded-xl border border-border/70 bg-background/50 px-3 py-2"
+                        className="flex items-center gap-2 rounded-xl border border-border/70 bg-background/50 px-3 py-2"
                       >
-                        {renderEditableText(
-                          node,
-                          row[0] ?? "",
-                          { kind: "table-cell", nodeId: node.id, rowIndex, columnIndex: 0 },
-                          "w-full text-left text-sm text-muted-foreground"
-                        )}
+                        <div className="flex min-w-0 flex-1">
+                          {renderEditableText(
+                            node,
+                            row[0] ?? "",
+                            { kind: "table-cell", nodeId: node.id, rowIndex, columnIndex: 0 },
+                            "w-full text-left text-sm text-muted-foreground"
+                          )}
+                        </div>
+                        <div className="flex shrink-0 flex-col gap-1">
+                          <button
+                            type="button"
+                            onPointerDown={(event) => event.stopPropagation()}
+                            onClick={(event) => {
+                              event.stopPropagation()
+                              if (rowIndex === 0) {
+                                return
+                              }
+
+                              updateNode(node.id, (current) => {
+                                const nextRows = [...current.tableRows]
+                                const previousRow = nextRows[rowIndex - 1]
+                                nextRows[rowIndex - 1] = nextRows[rowIndex]
+                                nextRows[rowIndex] = previousRow
+                                return { ...current, tableRows: nextRows }
+                              })
+                            }}
+                            className="rounded-md border border-border/70 px-1.5 py-0.5 text-[10px] text-muted-foreground hover:bg-muted disabled:cursor-not-allowed disabled:opacity-40"
+                            disabled={rowIndex === 0}
+                          >
+                            up
+                          </button>
+                          <button
+                            type="button"
+                            onPointerDown={(event) => event.stopPropagation()}
+                            onClick={(event) => {
+                              event.stopPropagation()
+                              if (rowIndex === node.tableRows.length - 1) {
+                                return
+                              }
+
+                              updateNode(node.id, (current) => {
+                                const nextRows = [...current.tableRows]
+                                const nextRow = nextRows[rowIndex + 1]
+                                nextRows[rowIndex + 1] = nextRows[rowIndex]
+                                nextRows[rowIndex] = nextRow
+                                return { ...current, tableRows: nextRows }
+                              })
+                            }}
+                            className="rounded-md border border-border/70 px-1.5 py-0.5 text-[10px] text-muted-foreground hover:bg-muted disabled:cursor-not-allowed disabled:opacity-40"
+                            disabled={rowIndex === node.tableRows.length - 1}
+                          >
+                            down
+                          </button>
+                        </div>
                       </div>
                     ))}
                   </div>
@@ -1232,6 +1569,8 @@ function InfiniteCanvas() {
                 <div
                   className="flex cursor-move items-center justify-center rounded-full border border-border/80 p-6 text-center shadow-lg backdrop-blur select-none"
                   style={getNodeSurfaceStyle(node)}
+                  ref={(element) => setNodeContentElement(node.id, element)}
+                  data-node-content-id={node.id}
                 >
                   {renderEditableText(
                     node,
@@ -1246,9 +1585,11 @@ function InfiniteCanvas() {
                 <div
                   className="relative cursor-move select-none"
                   style={{
-                    width: `${node.width}px`,
-                    height: `${node.height}px`,
+                    width: `${getEffectiveNodeSize(node).width}px`,
+                    height: `${getEffectiveNodeSize(node).height}px`,
                   }}
+                  ref={(element) => setNodeContentElement(node.id, element)}
+                  data-node-content-id={node.id}
                 >
                   {node.diagramNodes.map((_, nodeIndex) => {
                     const angle = (-Math.PI / 2) + (Math.PI * 2 * nodeIndex) / Math.max(node.diagramNodes.length, 1)
@@ -1710,10 +2051,17 @@ function InfiniteCanvas() {
                   max={720}
                   value={selectedNode.width}
                   onChange={(event) =>
-                    updateSelectedNode({
-                      width: clamp(Number(event.target.value) || selectedNode.width, 80, 720),
-                      autoSize: false,
-                    })
+                    updateSelectedNode((() => {
+                      const minSize = getNodeContentMinSize(selectedNode)
+                      return {
+                        width: clamp(
+                          Number(event.target.value) || selectedNode.width,
+                          minSize.width,
+                          720
+                        ),
+                        autoSize: false,
+                      }
+                    })())
                   }
                   className="h-9 w-full rounded-lg border border-border bg-background px-2 text-sm outline-none"
                 />
@@ -1729,10 +2077,17 @@ function InfiniteCanvas() {
                   max={720}
                   value={selectedNode.height}
                   onChange={(event) =>
-                    updateSelectedNode({
-                      height: clamp(Number(event.target.value) || selectedNode.height, 80, 720),
-                      autoSize: false,
-                    })
+                    updateSelectedNode((() => {
+                      const minSize = getNodeContentMinSize(selectedNode)
+                      return {
+                        height: clamp(
+                          Number(event.target.value) || selectedNode.height,
+                          minSize.height,
+                          720
+                        ),
+                        autoSize: false,
+                      }
+                    })())
                   }
                   className="h-9 w-full rounded-lg border border-border bg-background px-2 text-sm outline-none"
                 />
