@@ -1,6 +1,7 @@
-import type { CardType, CanvasNode } from "./types"
+import { useRef } from "react"
+import type { CardType, CanvasNode, ConnectionDrag } from "./types"
 import { createDefaultNode } from "./node-utils"
-import { isCircleLikeNode } from "./node-utils"
+import { getTableColumnAtPoint, isCircleLikeNode } from "./node-utils"
 import { getNodeResolvedBaseMinSize, isFlexibleHeightCard } from "./node-utils"
 import { clamp } from "./grid"
 import { useInfiniteCanvasState } from "./useInfiniteCanvasState"
@@ -30,6 +31,8 @@ export function useInfiniteCanvasHandlers(ctx: ReturnType<typeof useInfiniteCanv
     setSelectionState,
     setEditingField,
     setEditingValue,
+    setConnectionDrag,
+    setTableEdges,
     setIsDragging,
     setOffset,
     setZoom,
@@ -42,6 +45,8 @@ export function useInfiniteCanvasHandlers(ctx: ReturnType<typeof useInfiniteCanv
     isNodeInsideSelection,
   } = ctx
 
+  const connectionDragRef = useRef<ConnectionDrag | null>(null)
+
   const handlePointerDown = (event: React.PointerEvent<HTMLDivElement>) => {
     if (event.button === 0) {
       const rect = event.currentTarget.getBoundingClientRect()
@@ -50,6 +55,8 @@ export function useInfiniteCanvasHandlers(ctx: ReturnType<typeof useInfiniteCanv
       setSelectedNodeIds([])
       setEditingField(null)
       setEditingValue("")
+      setConnectionDrag(null)
+      connectionDragRef.current = null
       const nextSelection = {
         pointerId: event.pointerId,
         tool: selectionTool,
@@ -73,6 +80,16 @@ export function useInfiniteCanvasHandlers(ctx: ReturnType<typeof useInfiniteCanv
   }
 
   const handlePointerMove = (event: React.PointerEvent<HTMLDivElement>) => {
+    const connDrag = connectionDragRef.current
+    if (connDrag) {
+      const rect = event.currentTarget.getBoundingClientRect()
+      const endX = event.clientX - rect.left
+      const endY = event.clientY - rect.top
+      const next = { ...connDrag, endX, endY }
+      connectionDragRef.current = next
+      setConnectionDrag(next)
+      return
+    }
     const nodeResize = nodeResizeRef.current
     if (nodeResize) {
       const deltaX = (event.clientX - nodeResize.startClientX) / zoom
@@ -140,6 +157,31 @@ export function useInfiniteCanvasHandlers(ctx: ReturnType<typeof useInfiniteCanv
   }
 
   const handlePointerUp = (event: React.PointerEvent<HTMLDivElement>) => {
+    const connDrag = connectionDragRef.current
+    if (connDrag) {
+      connectionDragRef.current = null
+      setConnectionDrag(null)
+      event.currentTarget.releasePointerCapture(event.pointerId)
+      const rect = event.currentTarget.getBoundingClientRect()
+      const point = { x: event.clientX - rect.left, y: event.clientY - rect.top }
+      const target = getTableColumnAtPoint(nodes, point, getNodeStyle, getEffectiveNodeSize, getNodeScale())
+      if (
+        target &&
+        (target.nodeId !== connDrag.sourceNodeId || target.columnIndex !== connDrag.sourceColumnIndex)
+      ) {
+        setTableEdges((prev) => [
+          ...prev,
+          {
+            id: `edge-${crypto.randomUUID()}`,
+            sourceNodeId: connDrag.sourceNodeId,
+            sourceColumnIndex: connDrag.sourceColumnIndex,
+            targetNodeId: target.nodeId,
+            targetColumnIndex: target.columnIndex,
+          },
+        ])
+      }
+      return
+    }
     if (selectionRef.current?.pointerId === event.pointerId) {
       const selection = selectionRef.current
       selectionRef.current = null
@@ -279,6 +321,27 @@ export function useInfiniteCanvasHandlers(ctx: ReturnType<typeof useInfiniteCanv
     setNodes((current) => current.map((node) => (idSet.has(node.id) ? { ...node, ...patch } : node)))
   }
 
+  const onConnectionDragStart = (
+    nodeId: string,
+    columnIndex: number,
+    clientX: number,
+    clientY: number,
+    pointerId: number
+  ) => {
+    const el = containerRef.current
+    if (!el) return
+    const rect = el.getBoundingClientRect()
+    const drag: ConnectionDrag = {
+      sourceNodeId: nodeId,
+      sourceColumnIndex: columnIndex,
+      endX: clientX - rect.left,
+      endY: clientY - rect.top,
+    }
+    connectionDragRef.current = drag
+    setConnectionDrag(drag)
+    el.setPointerCapture(pointerId)
+  }
+
   const getNodeSurfaceStyle = (node: CanvasNode) => {
     const isFlexibleHeightNode = isFlexibleHeightCard(node.type)
     const effectiveSize = getEffectiveNodeSize(node)
@@ -312,5 +375,6 @@ export function useInfiniteCanvasHandlers(ctx: ReturnType<typeof useInfiniteCanv
     getNodeStyle,
     updateSelectedNode,
     getNodeSurfaceStyle,
+    onConnectionDragStart,
   }
 }

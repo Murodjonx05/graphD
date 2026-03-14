@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react"
 import type {
   CanvasNode,
+  ConnectionDrag,
   EditingField,
   GridSettings,
   MenuState,
@@ -9,10 +10,10 @@ import type {
   Point,
   SelectionState,
   Size,
+  TableEdge,
 } from "./types"
 import {
   DEFAULT_GRID,
-  TABLE_CARD_PADDING_X,
 } from "./types"
 import {
   getNodeBaseMinSize,
@@ -51,6 +52,8 @@ export function useInfiniteCanvasState() {
   const [editingField, setEditingField] = useState<EditingField | null>(null)
   const [editingValue, setEditingValue] = useState("")
   const [contentMinSizes, setContentMinSizes] = useState<Record<string, Size>>({})
+  const [tableEdges, setTableEdges] = useState<TableEdge[]>([])
+  const [connectionDrag, setConnectionDrag] = useState<ConnectionDrag | null>(null)
 
   const selectedNodeId = selectedNodeIds[0] ?? null
   const selectedNode = nodes.find((node) => node.id === selectedNodeId) ?? null
@@ -112,12 +115,11 @@ export function useInfiniteCanvasState() {
           let contentWidth: number
           let contentHeight: number
           if (isTableWrapperEntry && isTable) {
-            contentWidth = Math.ceil(Math.max(baseMinSize.width, element.scrollWidth + TABLE_CARD_PADDING_X))
+            contentWidth = baseMinSize.width
             contentHeight = previous ? previous.height : baseMinSize.height
           } else {
-            const tableWrapper = isTable ? tableContentRef.current.get(nodeId) : null
-            contentWidth = isTable && tableWrapper
-              ? Math.ceil(Math.max(baseMinSize.width, tableWrapper.scrollWidth + TABLE_CARD_PADDING_X))
+            contentWidth = isTable
+              ? baseMinSize.width
               : Math.ceil(Math.max(baseMinSize.width, element.scrollWidth))
             contentHeight = Math.ceil(Math.max(baseMinSize.height, element.scrollHeight))
           }
@@ -208,9 +210,8 @@ export function useInfiniteCanvasState() {
     const baseMinSize = getNodeResolvedBaseMinSize(node)
     const isFlexibleCard = isFlexibleHeightCard(node.type)
     const isTable = node.type === "square-table"
-    const tableWrapper = isTable ? tableContentRef.current.get(nodeId) : null
-    const contentWidth = isTable && tableWrapper
-      ? Math.ceil(Math.max(baseMinSize.width, tableWrapper.scrollWidth + TABLE_CARD_PADDING_X))
+    const contentWidth = isTable
+      ? baseMinSize.width
       : Math.ceil(Math.max(baseMinSize.width, element.scrollWidth))
     const nextSize = {
       width: isTable ? contentWidth : isFlexibleCard ? baseMinSize.width : contentWidth,
@@ -425,6 +426,8 @@ export function useInfiniteCanvasState() {
       editingField,
       editingValue,
       contentMinSizes,
+      tableEdges,
+      connectionDrag,
       selectedNodeId,
       selectedNode,
     },
@@ -443,6 +446,8 @@ export function useInfiniteCanvasState() {
     setEditingField,
     setEditingValue,
     setContentMinSizes,
+    setTableEdges,
+    setConnectionDrag,
     updateNode,
     stopCanvasPan,
     getNodeContentMinSize,

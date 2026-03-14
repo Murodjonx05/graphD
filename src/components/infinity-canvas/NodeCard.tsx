@@ -1,5 +1,5 @@
 import type { CanvasNode } from "./types"
-import type { EditingField } from "./types"
+import type { EditingField, TableEdge } from "./types"
 import { NodeCardSquareBody } from "./NodeCardSquareBody"
 import { NodeCardTitleBody } from "./NodeCardTitleBody"
 import { NodeCardTable } from "./NodeCardTable"
@@ -9,6 +9,14 @@ import { NodeCardCircleBody } from "./NodeCardCircleBody"
 type CommonProps = {
   node: CanvasNode
   isSelected: boolean
+  tableEdges?: TableEdge[]
+  onConnectionDragStart?: (
+    nodeId: string,
+    columnIndex: number,
+    clientX: number,
+    clientY: number,
+    pointerId: number
+  ) => void
   getNodeStyle: (node: CanvasNode) => React.CSSProperties
   getNodeSurfaceStyle: (node: CanvasNode) => React.CSSProperties
   setNodeContentElement: (nodeId: string, element: HTMLElement | null) => void
@@ -28,6 +36,8 @@ type CommonProps = {
 export function NodeCard({
   node,
   isSelected,
+  tableEdges,
+  onConnectionDragStart,
   getNodeStyle,
   getNodeSurfaceStyle,
   setNodeContentElement,
@@ -77,6 +87,8 @@ export function NodeCard({
         <NodeCardTable
           {...common}
           setTableWrapperElement={setTableWrapperElement ?? (() => {})}
+          tableEdges={tableEdges ?? []}
+          onConnectionDragStart={onConnectionDragStart ?? (() => {})}
         />
       )}
       {node.type === "square-list-column" && <NodeCardListColumn {...common} />}

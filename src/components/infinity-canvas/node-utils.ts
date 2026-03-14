@@ -6,10 +6,41 @@ import type {
   Size,
   SqliteType,
 } from "./types"
+
+/** Coerce a single cell value to the given SQLite type (e.g. after column type change). */
+export function coerceValueToType(type: SqliteType, value: string): string {
+  const trimmed = value.trim()
+  switch (type) {
+    case "INTEGER": {
+      const n = Number(trimmed)
+      if (trimmed === "" || Number.isNaN(n)) return ""
+      return String(Math.floor(n))
+    }
+    case "REAL": {
+      const n = Number(trimmed)
+      if (trimmed === "" || Number.isNaN(n)) return ""
+      return String(n)
+    }
+    case "TEXT":
+      return value
+    case "BLOB":
+      return value
+    default:
+      return value
+  }
+}
+
+/** Coerce an array of cell values (one column) to the given type. */
+export function coerceColumnValues(type: SqliteType, values: string[]): string[] {
+  return values.map((v) => coerceValueToType(type, v))
+}
+import type { Point } from "./types"
 import {
   TABLE_ADD_COLUMN_CELL_WIDTH,
   TABLE_CARD_PADDING_X,
   TABLE_COLUMN_MIN_WIDTH,
+  TABLE_LIST_ITEM_HEIGHT,
+  TABLE_WRAPPER_OFFSET_Y,
 } from "./types"
 
 export function columnDefToOption(def: TableColumnDef): ColumnTypeOption {
@@ -142,18 +173,19 @@ export function getNodeResolvedBaseMinSize(node: CanvasNode): Size {
   }
 
   const defs = getTableColumnDefs(node)
-  const columnsWidth = defs.reduce(
-    (sum, d) => sum + (d.width ?? TABLE_COLUMN_MIN_WIDTH),
-    0
+  const widestColumn = defs.reduce(
+    (max, d) => Math.max(max, d.width ?? TABLE_COLUMN_MIN_WIDTH),
+    TABLE_COLUMN_MIN_WIDTH
   )
+  const listHeight = defs.length * TABLE_LIST_ITEM_HEIGHT + 24
   const tableWidth = Math.max(
     baseMinSize.width,
-    columnsWidth + TABLE_CARD_PADDING_X + TABLE_ADD_COLUMN_CELL_WIDTH
+    widestColumn + TABLE_CARD_PADDING_X + TABLE_ADD_COLUMN_CELL_WIDTH + 48
   )
 
   return {
     width: tableWidth,
-    height: baseMinSize.height,
+    height: Math.max(baseMinSize.height, listHeight),
   }
 }
 
@@ -168,4 +200,44 @@ export function isFlexibleHeightCard(type: CardType) {
 
 export function isCircleLikeNode(node: CanvasNode) {
   return node.type === "circle-body"
+}
+
+/** Hit-test: find table and column index at a point (container coords). Used for connection drop target.
+ * scale: card transform scale so hit area matches rendered bounds. */
+export function getTableColumnAtPoint(
+  nodes: CanvasNode[],
+  point: Point,
+  getNodeStyle: (node: CanvasNode) => { left: number; top: number },
+  getEffectiveNodeSize: (node: CanvasNode) => Size,
+  scale: number
+): { nodeId: string; columnIndex: number } | null {
+  const tableNodes = nodes.filter((n) => n.type === "square-table")
+  for (const node of tableNodes) {
+    const style = getNodeStyle(node)
+    const size = getEffectiveNodeSize(node)
+    const defs = getTableColumnDefs(node)
+    const colCount = defs.length
+    if (colCount === 0) continue
+    const w = size.width * scale
+    const h = size.height * scale
+    const wrapperLeft = style.left - w / 2 + (TABLE_CARD_PADDING_X / 2) * scale
+    const wrapperTop = style.top - h / 2 + TABLE_WRAPPER_OFFSET_Y * scale
+    const itemHeight = TABLE_LIST_ITEM_HEIGHT * scale
+    const listBottom = wrapperTop + defs.length * itemHeight
+    const wrapperRight = style.left + w / 2 - (TABLE_CARD_PADDING_X / 2) * scale
+
+    if (
+      point.x < wrapperLeft ||
+      point.x >= wrapperRight ||
+      point.y < wrapperTop ||
+      point.y >= listBottom
+    ) {
+      continue
+    }
+
+    const columnIndex = Math.floor((point.y - wrapperTop) / itemHeight)
+    const clampedIndex = Math.max(0, Math.min(columnIndex, defs.length - 1))
+    return { nodeId: node.id, columnIndex: clampedIndex }
+  }
+  return null
 }

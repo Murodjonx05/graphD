@@ -1,10 +1,18 @@
 import type { CanvasNode } from "./types"
-import type { EditingField } from "./types"
+import type { EditingField, TableEdge } from "./types"
 import { NodeCard } from "./NodeCard"
 
 type Props = {
   nodes: CanvasNode[]
   selectedNodeIds: string[]
+  tableEdges: TableEdge[]
+  onConnectionDragStart: (
+    nodeId: string,
+    columnIndex: number,
+    clientX: number,
+    clientY: number,
+    pointerId: number
+  ) => void
   getNodeStyle: (node: CanvasNode) => React.CSSProperties
   getNodeSurfaceStyle: (node: CanvasNode) => React.CSSProperties
   setNodeContentElement: (nodeId: string, element: HTMLElement | null) => void
@@ -24,6 +32,8 @@ type Props = {
 export function CanvasNodeLayer({
   nodes,
   selectedNodeIds,
+  tableEdges,
+  onConnectionDragStart,
   getNodeStyle,
   getNodeSurfaceStyle,
   setNodeContentElement,
@@ -49,6 +59,8 @@ export function CanvasNodeLayer({
           key={node.id}
           node={node}
           isSelected={selectedNodeIds.includes(node.id)}
+          tableEdges={tableEdges}
+          onConnectionDragStart={onConnectionDragStart}
           getNodeStyle={getNodeStyle}
           getNodeSurfaceStyle={getNodeSurfaceStyle}
           setNodeContentElement={setNodeContentElement}

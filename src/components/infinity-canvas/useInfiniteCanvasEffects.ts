@@ -15,6 +15,7 @@ type Params = {
   setClipboardNodes: React.Dispatch<React.SetStateAction<CanvasNode[]>>
   setNodes: React.Dispatch<React.SetStateAction<CanvasNode[]>>
   setSelectedNodeIds: React.Dispatch<React.SetStateAction<string[]>>
+  setTableEdges: React.Dispatch<React.SetStateAction<import("./types").TableEdge[]>>
   setEditingField: React.Dispatch<React.SetStateAction<import("./types").EditingField | null>>
   findOpenPositionForNode: (node: CanvasNode, existing: CanvasNode[], preferred: Point) => Point
   isFocusInTextEditable: () => boolean
@@ -33,6 +34,7 @@ export function useInfiniteCanvasEffects({
   setClipboardNodes,
   setNodes,
   setSelectedNodeIds,
+  setTableEdges,
   setEditingField,
   findOpenPositionForNode,
   isFocusInTextEditable,
@@ -50,8 +52,10 @@ export function useInfiniteCanvasEffects({
       }
       if (isCut && !inText && selectedNodeIds.length > 0) {
         event.preventDefault()
-        setClipboardNodes(nodes.filter((n) => selectedNodeIds.includes(n.id)).map((n) => ({ ...n })))
-        setNodes((current) => current.filter((n) => !selectedNodeIds.includes(n.id)))
+        const removedIds = new Set(selectedNodeIds)
+        setClipboardNodes(nodes.filter((n) => removedIds.has(n.id)).map((n) => ({ ...n })))
+        setNodes((current) => current.filter((n) => !removedIds.has(n.id)))
+        setTableEdges((edges) => edges.filter((e) => !removedIds.has(e.sourceNodeId) && !removedIds.has(e.targetNodeId)))
         setSelectedNodeIds([])
         setEditingField(null)
       }
@@ -71,7 +75,9 @@ export function useInfiniteCanvasEffects({
       }
       if (isDelete && !inText && selectedNodeIds.length > 0) {
         event.preventDefault()
-        setNodes((current) => current.filter((n) => !selectedNodeIds.includes(n.id)))
+        const removedIds = new Set(selectedNodeIds)
+        setNodes((current) => current.filter((n) => !removedIds.has(n.id)))
+        setTableEdges((edges) => edges.filter((e) => !removedIds.has(e.sourceNodeId) && !removedIds.has(e.targetNodeId)))
         setSelectedNodeIds([])
         setEditingField(null)
       }
@@ -88,6 +94,7 @@ export function useInfiniteCanvasEffects({
     setEditingField,
     setNodes,
     setSelectedNodeIds,
+    setTableEdges,
   ])
 
   useEffect(() => {

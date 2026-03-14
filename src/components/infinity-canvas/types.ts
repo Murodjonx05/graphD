@@ -28,6 +28,23 @@ export type TableColumnDef = {
   width?: number
 }
 
+/** Connection between two table cards by column headers (col_heads). */
+export type TableEdge = {
+  id: string
+  sourceNodeId: string
+  sourceColumnIndex: number
+  targetNodeId: string
+  targetColumnIndex: number
+}
+
+/** Dragging a new connection from a column; endX/endY follow the pointer. */
+export type ConnectionDrag = {
+  sourceNodeId: string
+  sourceColumnIndex: number
+  endX: number
+  endY: number
+}
+
 export type CanvasNode = {
   id: string
   type: CardType
@@ -138,6 +155,15 @@ export const TABLE_COLUMN_MIN_WIDTH = 112
 export const TABLE_CARD_PADDING_X = 32
 /** Width of the add-column cell in the table header (before:resize min width) */
 export const TABLE_ADD_COLUMN_CELL_WIDTH = 48
+/** Top offset from card top to the table wrapper start (title block + spacing). */
+export const TABLE_WRAPPER_OFFSET_Y = 58
+/** Row height for list-style table schema items. */
+export const TABLE_LIST_ITEM_HEIGHT = 56
+/** Approximate table header row height for edge anchors and hit-test */
+/** Y offset for connection arrow anchor (bottom of header row). */
+export const TABLE_HEADER_HEIGHT = 44
+/** Vertical span from card top to below table header row; used for connection drop hit-test. */
+export const TABLE_HEADER_HIT_HEIGHT = 100
 
 export const SQLITE_TYPES: SqliteType[] = ["INTEGER", "TEXT", "REAL", "BLOB"]
 

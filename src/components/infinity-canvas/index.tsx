@@ -3,6 +3,7 @@ import { useInfiniteCanvasState } from "./useInfiniteCanvasState"
 import { useInfiniteCanvasEffects } from "./useInfiniteCanvasEffects"
 import { useInfiniteCanvasHandlers } from "./useInfiniteCanvasHandlers"
 import { CanvasNodeLayer } from "./CanvasNodeLayer"
+import { TableEdgesOverlay } from "./TableEdgesOverlay"
 import { SelectionOverlay } from "./SelectionOverlay"
 import { CanvasSettingsPanel } from "./CanvasSettingsPanel"
 import { CanvasPropertiesPanel } from "./CanvasPropertiesPanel"
@@ -23,6 +24,7 @@ function InfiniteCanvas() {
     setClipboardNodes: state.setClipboardNodes,
     setNodes: state.setNodes,
     setSelectedNodeIds: state.setSelectedNodeIds,
+    setTableEdges: state.setTableEdges,
     setEditingField: state.setEditingField,
     findOpenPositionForNode: state.findOpenPositionForNode,
     isFocusInTextEditable: state.isFocusInTextEditable,
@@ -42,6 +44,8 @@ function InfiniteCanvas() {
       selectionTool,
       selectionState,
       selectedNode,
+      tableEdges,
+      connectionDrag,
       zoom,
     },
     setGrid,
@@ -57,6 +61,8 @@ function InfiniteCanvas() {
     updateNode,
     syncNodeContentMinSize,
     getNodeResizeMinSize,
+    getEffectiveNodeSize,
+    getNodeScale,
   } = state
 
   const {
@@ -93,9 +99,19 @@ function InfiniteCanvas() {
             isDragging ? "block h-full w-full cursor-grabbing" : "block h-full w-full cursor-default"
           }
         />
+        <TableEdgesOverlay
+          nodes={nodes}
+          tableEdges={tableEdges}
+          connectionDrag={connectionDrag}
+          getNodeStyle={getNodeStyle}
+          getEffectiveNodeSize={getEffectiveNodeSize}
+          getNodeScale={getNodeScale}
+        />
         <CanvasNodeLayer
           nodes={nodes}
           selectedNodeIds={selectedNodeIds}
+          tableEdges={tableEdges}
+          onConnectionDragStart={handlers.onConnectionDragStart}
           getNodeStyle={getNodeStyle}
           getNodeSurfaceStyle={getNodeSurfaceStyle}
           setNodeContentElement={setNodeContentElement}
