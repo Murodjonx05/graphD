@@ -37,6 +37,14 @@ type CanvasNode = {
   textColor: string
   textSize: number
   textWeight: number
+  /** Title text (for cards with title+body). Fallback: textColor/textSize/textWeight */
+  titleTextColor?: string
+  titleTextSize?: number
+  titleTextWeight?: number
+  /** Body text. Fallback: textColor/textSize/textWeight */
+  bodyTextColor?: string
+  bodyTextSize?: number
+  bodyTextWeight?: number
   width: number
   height: number
   autoSize: boolean
@@ -48,6 +56,7 @@ type NodeDragState = {
   startClientX: number
   startClientY: number
   startPositions: Record<string, Point>
+  active: boolean
 }
 
 type MenuState = {
@@ -120,14 +129,22 @@ const CARD_OPTIONS: Array<{ type: CardType; label: string }> = [
   { type: "circle-diagram", label: "circle_diagram" },
 ]
 
+const TABLE_COLUMN_MIN_WIDTH = 112
+
 function getThemeNodeDefaults() {
   const styles = getComputedStyle(document.documentElement)
-
+  const fg =
+    styles.getPropertyValue("--card-foreground").trim() || "oklch(0.145 0 0)"
   return {
     backgroundColor: styles.getPropertyValue("--card").trim() || "oklch(1 0 0)",
-    textColor:
-      styles.getPropertyValue("--card-foreground").trim() || "oklch(0.145 0 0)",
+    textColor: fg,
     opacity: 0.95,
+    titleTextColor: fg,
+    titleTextSize: 16,
+    titleTextWeight: 600,
+    bodyTextColor: fg,
+    bodyTextSize: 14,
+    bodyTextWeight: 500,
   }
 }
 
@@ -150,8 +167,14 @@ function createDefaultNode(type: CardType, x: number, y: number): CanvasNode {
     backgroundColor: themeDefaults.backgroundColor,
     opacity: themeDefaults.opacity,
     textColor: themeDefaults.textColor,
-    textSize: 14,
-    textWeight: 500,
+    textSize: themeDefaults.bodyTextSize,
+    textWeight: themeDefaults.bodyTextWeight,
+    titleTextColor: themeDefaults.titleTextColor,
+    titleTextSize: themeDefaults.titleTextSize,
+    titleTextWeight: themeDefaults.titleTextWeight,
+    bodyTextColor: themeDefaults.bodyTextColor,
+    bodyTextSize: themeDefaults.bodyTextSize,
+    bodyTextWeight: themeDefaults.bodyTextWeight,
   }
 
   switch (type) {
@@ -175,6 +198,50 @@ function createDefaultNode(type: CardType, x: number, y: number): CanvasNode {
     case "circle-diagram":
       return { ...base, width: 256, height: 256, autoSize: true }
   }
+}
+
+function getNodeBaseMinSize(type: CardType): Size {
+  switch (type) {
+    case "square-body":
+      return { width: 140, height: 84 }
+    case "square-title-body":
+      return { width: 156, height: 104 }
+    case "square-table":
+      return { width: 180, height: 132 }
+    case "square-list-column":
+      return { width: 156, height: 132 }
+    case "circle-body":
+      return { width: 120, height: 120 }
+    case "circle-diagram":
+      return { width: 220, height: 220 }
+  }
+}
+
+function getNodeResolvedBaseMinSize(node: CanvasNode): Size {
+  const baseMinSize = getNodeBaseMinSize(node.type)
+
+  if (node.type !== "square-table") {
+    return baseMinSize
+  }
+
+  const tableWidth = Math.max(
+    baseMinSize.width,
+    node.tableColumns.length * TABLE_COLUMN_MIN_WIDTH + 32
+  )
+
+  return {
+    width: tableWidth,
+    height: baseMinSize.height,
+  }
+}
+
+function isFlexibleHeightCard(type: CardType) {
+  return (
+    type === "square-body" ||
+    type === "square-title-body" ||
+    type === "square-table" ||
+    type === "square-list-column"
+  )
 }
 
 function SettingsIcon() {
@@ -503,13 +570,22 @@ function InfiniteCanvas() {
 
           const node = nodesRef.current.find((currentNode) => currentNode.id === nodeId)
           const previous = current[nodeId]
-          const contentWidth = Math.ceil(Math.max(80, element.scrollWidth))
-          const contentHeight = Math.ceil(Math.max(80, element.scrollHeight))
+          const nodeType = node?.type ?? "square-body"
+          const baseMinSize = node
+            ? getNodeResolvedBaseMinSize(node)
+            : getNodeBaseMinSize(nodeType)
+          const contentWidth = Math.ceil(Math.max(baseMinSize.width, element.scrollWidth))
+          const contentHeight = Math.ceil(Math.max(baseMinSize.height, element.scrollHeight))
+          const isFlexibleCard = isFlexibleHeightCard(nodeType)
 
-          const width = node?.autoSize
-            ? contentWidth
-            : Math.max(80, previous?.width ?? contentWidth)
-          const height = Math.max(80, previous?.height ?? 80, contentHeight)
+          const width = isFlexibleCard
+            ? baseMinSize.width
+            : node?.autoSize
+              ? contentWidth
+              : Math.max(baseMinSize.width, previous?.width ?? baseMinSize.width)
+          const height = isFlexibleCard
+            ? contentHeight
+            : Math.max(baseMinSize.height, previous?.height ?? baseMinSize.height, contentHeight)
 
           if (!previous || previous.width !== width || previous.height !== height) {
             next[nodeId] = { width, height }
@@ -555,10 +631,16 @@ function InfiniteCanvas() {
 
   const getNodeContentMinSize = useCallback((node: CanvasNode) => {
     const measured = contentMinSizes[node.id]
+    const baseMinSize = getNodeResolvedBaseMinSize(node)
+    const isFlexibleCard = isFlexibleHeightCard(node.type)
 
     return {
-      width: Math.max(80, measured ? measured.width : 80),
-      height: Math.max(80, measured ? measured.height : 80),
+      width: isFlexibleCard
+        ? baseMinSize.width
+        : node.autoSize
+        ? Math.max(baseMinSize.width, measured ? measured.width : baseMinSize.width)
+        : baseMinSize.width,
+      height: Math.max(baseMinSize.height, measured ? measured.height : baseMinSize.height),
     }
   }, [contentMinSizes])
 
@@ -570,6 +652,51 @@ function InfiniteCanvas() {
       height: Math.max(node.height, minSize.height),
     }
   }, [getNodeContentMinSize])
+
+  const getNodeResizeMinSize = useCallback((node: CanvasNode) => {
+    const contentMinSize = getNodeContentMinSize(node)
+    const baseMinSize = getNodeResolvedBaseMinSize(node)
+
+    return {
+      width: isFlexibleHeightCard(node.type) ? baseMinSize.width : contentMinSize.width,
+      height: contentMinSize.height,
+    }
+  }, [getNodeContentMinSize])
+
+  const syncNodeContentMinSize = useCallback((nodeId: string) => {
+    const element = contentElementsRef.current.get(nodeId)
+    const node = nodesRef.current.find((currentNode) => currentNode.id === nodeId)
+
+    if (!element || !node) {
+      return
+    }
+
+    const baseMinSize = getNodeResolvedBaseMinSize(node)
+    const isFlexibleCard = isFlexibleHeightCard(node.type)
+    const nextSize = {
+      width: isFlexibleCard
+        ? baseMinSize.width
+        : Math.ceil(Math.max(baseMinSize.width, element.scrollWidth)),
+      height: Math.ceil(Math.max(baseMinSize.height, element.scrollHeight)),
+    }
+
+    setContentMinSizes((current) => {
+      const previous = current[nodeId]
+
+      if (
+        previous &&
+        previous.width === nextSize.width &&
+        previous.height === nextSize.height
+      ) {
+        return current
+      }
+
+      return {
+        ...current,
+        [nodeId]: nextSize,
+      }
+    })
+  }, [])
 
   const nodesOverlap = (
     first: { x: number; y: number; width: number; height: number },
@@ -623,12 +750,26 @@ function InfiniteCanvas() {
     return { x: preferred.x + step * (maxAttempts + 1), y: preferred.y }
   }, [getEffectiveNodeSize, grid.distance])
 
+  const isFocusInTextEditable = useCallback(() => {
+    const el = document.activeElement
+    if (!el || !(el instanceof HTMLElement)) return false
+    if (el.tagName === "TEXTAREA") return true
+    if (el.tagName === "INPUT") {
+      const type = (el as HTMLInputElement).type?.toLowerCase()
+      return ["text", "search", "email", "url", "password", "number"].includes(type)
+    }
+    return el.isContentEditable
+  }, [])
+
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
+      const inText = isFocusInTextEditable()
       const isCopy = (event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "c"
+      const isCut = (event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "x"
       const isPaste = (event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "v"
+      const isDelete = event.key === "Delete" || event.key === "Backspace"
 
-      if (isCopy && selectedNodeIds.length > 0) {
+      if (isCopy && !inText && selectedNodeIds.length > 0) {
         event.preventDefault()
         setClipboardNodes(
           nodes
@@ -637,11 +778,24 @@ function InfiniteCanvas() {
         )
       }
 
-      if (isPaste && clipboardNodes.length > 0) {
+      if (isCut && !inText && selectedNodeIds.length > 0) {
         event.preventDefault()
-        setNodes((current) => {
-          const placedNodes = [...current]
-          const duplicates = clipboardNodes.map((node, index) => {
+        setClipboardNodes(
+          nodes
+            .filter((node) => selectedNodeIds.includes(node.id))
+            .map((node) => ({ ...node }))
+        )
+        setNodes((current) => current.filter((node) => !selectedNodeIds.includes(node.id)))
+        setSelectedNodeIds([])
+        setEditingField(null)
+      }
+
+      if (isPaste) {
+        if (inText) return
+        if (clipboardNodes.length > 0) {
+          event.preventDefault()
+          const placedNodes = [...nodes]
+          const newNodes = clipboardNodes.map((node, index) => {
             const duplicate = {
               ...node,
               id: `${node.type}-${crypto.randomUUID()}`,
@@ -656,14 +810,19 @@ function InfiniteCanvas() {
               x: position.x,
               y: position.y,
             }
-
             placedNodes.push(placedNode)
             return placedNode
           })
+          setNodes(placedNodes)
+          setSelectedNodeIds(newNodes.map((node) => node.id))
+        }
+      }
 
-          setSelectedNodeIds(duplicates.map((node) => node.id))
-          return placedNodes
-        })
+      if (isDelete && !inText && selectedNodeIds.length > 0) {
+        event.preventDefault()
+        setNodes((current) => current.filter((node) => !selectedNodeIds.includes(node.id)))
+        setSelectedNodeIds([])
+        setEditingField(null)
       }
     }
 
@@ -672,7 +831,7 @@ function InfiniteCanvas() {
     return () => {
       window.removeEventListener("keydown", handleKeyDown)
     }
-  }, [clipboardNodes, findOpenPositionForNode, nodes, selectedNodeIds])
+  }, [clipboardNodes, findOpenPositionForNode, isFocusInTextEditable, nodes, selectedNodeIds])
 
   useEffect(() => {
     const canvas = canvasRef.current
@@ -711,7 +870,7 @@ function InfiniteCanvas() {
     }
   }, [grid, offset, themeVersion, viewport, zoom])
 
-  const getNodeScale = () => clamp(zoom, 0.35, 2.5)
+  const getNodeScale = () => clamp(zoom, 0.1, 1)
 
   const getNodeScreenBounds = (node: CanvasNode) => {
     const scale = getNodeScale()
@@ -912,6 +1071,21 @@ function InfiniteCanvas() {
     if (nodeDrag) {
       const deltaX = (event.clientX - nodeDrag.startClientX) / zoom
       const deltaY = (event.clientY - nodeDrag.startClientY) / zoom
+
+      if (!nodeDrag.active) {
+        const distance = Math.hypot(event.clientX - nodeDrag.startClientX, event.clientY - nodeDrag.startClientY)
+
+        if (distance < 4) {
+          return
+        }
+
+        nodeDragRef.current = {
+          ...nodeDrag,
+          active: true,
+        }
+        containerRef.current?.setPointerCapture(event.pointerId)
+      }
+
       pendingNodeTransformRef.current = {
         mode: "drag",
         positions: Object.fromEntries(
@@ -978,8 +1152,10 @@ function InfiniteCanvas() {
 
     if (nodeDragRef.current?.pointerId === event.pointerId) {
       flushPendingNodeTransform()
+      if (nodeDragRef.current.active) {
+        event.currentTarget.releasePointerCapture(event.pointerId)
+      }
       nodeDragRef.current = null
-      event.currentTarget.releasePointerCapture(event.pointerId)
       return
     }
 
@@ -1016,7 +1192,7 @@ function InfiniteCanvas() {
     const worldX = (pointerX - centerX - offset.x) / zoom
     const worldY = (pointerY - centerY - offset.y) / zoom
     const zoomFactor = event.deltaY < 0 ? 1.1 : 0.9
-    const nextZoom = clamp(Number((zoom * zoomFactor).toFixed(3)), 0.35, 4)
+    const nextZoom = clamp(Number((zoom * zoomFactor).toFixed(3)), 0.1, 1)
 
     setZoom(nextZoom)
     setOffset({
@@ -1036,20 +1212,17 @@ function InfiniteCanvas() {
     }
 
     const newNode = createDefaultNode(type, menu.worldX, menu.worldY)
-    setNodes((current) => {
-      const position = findOpenPositionForNode(newNode, current, {
-        x: menu.worldX,
-        y: menu.worldY,
-      })
-      const placedNode = {
-        ...newNode,
-        x: position.x,
-        y: position.y,
-      }
-
-      setSelectedNodeIds([placedNode.id])
-      return [...current, placedNode]
+    const position = findOpenPositionForNode(newNode, nodes, {
+      x: menu.worldX,
+      y: menu.worldY,
     })
+    const placedNode = {
+      ...newNode,
+      x: position.x,
+      y: position.y,
+    }
+    setNodes((current) => [...current, placedNode])
+    setSelectedNodeIds([placedNode.id])
     setMenu(null)
   }
 
@@ -1075,13 +1248,13 @@ function InfiniteCanvas() {
       pointerId: event.pointerId,
       startClientX: event.clientX,
       startClientY: event.clientY,
+      active: false,
       startPositions: Object.fromEntries(
         nodes
           .filter((currentNode) => activeIds.includes(currentNode.id))
           .map((currentNode) => [currentNode.id, { x: currentNode.x, y: currentNode.y }])
       ),
     }
-    containerRef.current?.setPointerCapture(event.pointerId)
   }
 
   const handleNodePointerUp = (event: React.PointerEvent<HTMLDivElement>) => {
@@ -1089,8 +1262,11 @@ function InfiniteCanvas() {
       return
     }
 
+    if (nodeDragRef.current.active) {
+      containerRef.current?.releasePointerCapture(event.pointerId)
+    }
+
     nodeDragRef.current = null
-    containerRef.current?.releasePointerCapture(event.pointerId)
   }
 
   const handleResizePointerDown = (
@@ -1101,7 +1277,8 @@ function InfiniteCanvas() {
       return
     }
 
-    const minSize = getNodeContentMinSize(node)
+    const minSize = getNodeResizeMinSize(node)
+    const effectiveSize = getEffectiveNodeSize(node)
 
     event.stopPropagation()
     event.preventDefault()
@@ -1114,8 +1291,8 @@ function InfiniteCanvas() {
       pointerId: event.pointerId,
       startClientX: event.clientX,
       startClientY: event.clientY,
-      startWidth: node.width,
-      startHeight: node.height,
+      startWidth: effectiveSize.width,
+      startHeight: effectiveSize.height,
       minWidth: minSize.width,
       minHeight: minSize.height,
     }
@@ -1135,34 +1312,37 @@ function InfiniteCanvas() {
   }
 
   const updateSelectedNode = (patch: Partial<CanvasNode>) => {
-    if (!selectedNodeId) {
+    if (selectedNodeIds.length === 0) {
       return
     }
 
+    const idSet = new Set(selectedNodeIds)
     setNodes((current) =>
-      current.map((node) => (node.id === selectedNodeId ? { ...node, ...patch } : node))
+      current.map((node) => (idSet.has(node.id) ? { ...node, ...patch } : node))
     )
   }
 
   const getNodeSurfaceStyle = (node: CanvasNode) => {
-    const isFlexibleHeightNode =
-      node.type === "square-body" ||
-      node.type === "square-title-body" ||
-      node.type === "square-table" ||
-      node.type === "square-list-column"
+    const isFlexibleHeightNode = isFlexibleHeightCard(node.type)
     const effectiveSize = getEffectiveNodeSize(node)
+    const baseMinSize = getNodeResolvedBaseMinSize(node)
+    const widthValue =
+      isFlexibleHeightNode ? `${effectiveSize.width}px` : node.autoSize ? "fit-content" : `${effectiveSize.width}px`
 
     return {
       backgroundColor: node.backgroundColor,
       opacity: node.opacity,
-      color: node.textColor,
-      fontSize: `${node.textSize}px`,
-      fontWeight: node.textWeight,
-      width: node.autoSize ? "fit-content" : `${effectiveSize.width}px`,
+      width: widthValue,
       height: isFlexibleHeightNode ? "auto" : node.autoSize ? "fit-content" : `${effectiveSize.height}px`,
       minWidth: `${effectiveSize.width}px`,
-      minHeight: `${effectiveSize.height}px`,
-      maxWidth: node.autoSize ? "max-content" : `${effectiveSize.width}px`,
+      minHeight: isFlexibleHeightNode
+        ? `${baseMinSize.height}px`
+        : `${effectiveSize.height}px`,
+      maxWidth: isFlexibleHeightNode
+        ? `${effectiveSize.width}px`
+        : node.autoSize
+          ? "max-content"
+          : `${effectiveSize.width}px`,
       maxHeight: isFlexibleHeightNode
         ? "none"
         : node.autoSize
@@ -1172,12 +1352,43 @@ function InfiniteCanvas() {
     }
   }
 
-  const getNodeTextStyle = (node: CanvasNode) => ({
-    color: node.textColor,
-    fontSize: `${node.textSize}px`,
-    fontWeight: node.textWeight,
-    opacity: node.opacity,
-  })
+  const getNodeTextStyleForField = (node: CanvasNode, field: EditingField) => {
+    const isTitle =
+      field.kind === "title" ||
+      field.kind === "diagram-center"
+    const color = isTitle
+      ? (node.titleTextColor ?? node.textColor)
+      : (node.bodyTextColor ?? node.textColor)
+    const fontSize = isTitle
+      ? (node.titleTextSize ?? node.textSize)
+      : (node.bodyTextSize ?? node.textSize)
+    const fontWeight = isTitle
+      ? (node.titleTextWeight ?? node.textWeight)
+      : (node.bodyTextWeight ?? node.textWeight)
+    return {
+      color,
+      fontSize: `${fontSize}px`,
+      fontWeight,
+      opacity: node.opacity,
+    }
+  }
+
+  const getEditableFieldAriaLabel = (f: EditingField): string => {
+    switch (f.kind) {
+      case "title":
+        return "Edit title"
+      case "body":
+        return "Edit body"
+      case "table-column":
+        return `Edit column ${f.columnIndex + 1}`
+      case "table-cell":
+        return `Edit cell row ${f.rowIndex + 1} column ${f.columnIndex + 1}`
+      case "diagram-center":
+        return "Edit diagram center"
+      case "diagram-node":
+        return `Edit diagram node ${f.nodeIndex + 1}`
+    }
+  }
 
   const renderEditableText = (
     node: CanvasNode,
@@ -1186,6 +1397,7 @@ function InfiniteCanvas() {
     className: string
   ) => {
     const isEditing = JSON.stringify(editingField) === JSON.stringify(field)
+    const textStyle = getNodeTextStyleForField(node, field)
 
     if (isEditing) {
       const resizeEditor = (element: HTMLTextAreaElement) => {
@@ -1247,7 +1459,10 @@ function InfiniteCanvas() {
         <textarea
           autoFocus
           rows={1}
+          wrap="soft"
+          spellCheck={false}
           value={editingValue}
+          aria-label={getEditableFieldAriaLabel(field)}
           onPointerDown={(event) => event.stopPropagation()}
           onClick={(event) => event.stopPropagation()}
           onChange={(event) => {
@@ -1257,6 +1472,9 @@ function InfiniteCanvas() {
           onBlur={() => {
             setEditingField(null)
             setEditingValue("")
+            requestAnimationFrame(() => {
+              syncNodeContentMinSize(node.id)
+            })
           }}
           onKeyDown={(event) => {
             if (field.kind !== "body" && event.key === "Enter") {
@@ -1281,7 +1499,12 @@ function InfiniteCanvas() {
               element.setSelectionRange(element.value.length, element.value.length)
             })
           }}
-          className={`${className} block h-auto w-full min-w-0 resize-none overflow-hidden whitespace-pre-wrap break-words [overflow-wrap:anywhere] border-0 bg-transparent p-0 leading-[inherit] outline-none ring-0`}
+          className={`${className} block h-auto w-full min-w-0 max-w-full resize-none overflow-x-hidden overflow-y-hidden whitespace-pre-wrap break-words [overflow-wrap:anywhere] border-0 bg-transparent p-0 leading-[inherit] outline-none ring-0 focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2`}
+          style={{
+            ...textStyle,
+            boxSizing: "border-box",
+            wordBreak: "break-all",
+          }}
         />
       )
     }
@@ -1289,13 +1512,17 @@ function InfiniteCanvas() {
     return (
       <button
         type="button"
-        onPointerDown={(event) => event.stopPropagation()}
+        aria-label={getEditableFieldAriaLabel(field)}
         onDoubleClick={(event) => {
           event.stopPropagation()
           setEditingField(field)
           setEditingValue(value)
         }}
         className={`${className} block w-full min-w-0 whitespace-pre-wrap break-words [overflow-wrap:anywhere] select-none text-inherit`}
+        style={{
+          ...textStyle,
+          wordBreak: "break-all",
+        }}
       >
         {value}
       </button>
@@ -1395,6 +1622,7 @@ function InfiniteCanvas() {
                     <div className="flex items-center gap-1">
                       <button
                         type="button"
+                        aria-label="Add column"
                         onPointerDown={(event) => event.stopPropagation()}
                         onClick={(event) => {
                           event.stopPropagation()
@@ -1404,12 +1632,13 @@ function InfiniteCanvas() {
                             tableRows: current.tableRows.map((row) => [...row, "new cell"]),
                           }))
                         }}
-                        className="rounded-md border border-border/70 px-1.5 py-0.5 text-[10px] text-muted-foreground hover:bg-muted"
+                        className="rounded-md border border-border/70 px-1.5 py-0.5 text-[10px] text-muted-foreground hover:bg-muted focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
                       >
                         + col
                       </button>
                       <button
                         type="button"
+                        aria-label="Add row"
                         onPointerDown={(event) => event.stopPropagation()}
                         onClick={(event) => {
                           event.stopPropagation()
@@ -1421,7 +1650,7 @@ function InfiniteCanvas() {
                             ],
                           }))
                         }}
-                        className="rounded-md border border-border/70 px-1.5 py-0.5 text-[10px] text-muted-foreground hover:bg-muted"
+                        className="rounded-md border border-border/70 px-1.5 py-0.5 text-[10px] text-muted-foreground hover:bg-muted focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
                       >
                         + row
                       </button>
@@ -1430,7 +1659,10 @@ function InfiniteCanvas() {
                   <div className="overflow-hidden rounded-xl border border-border/70">
                     <div
                       className="bg-muted/60 text-[11px] font-medium uppercase tracking-[0.12em] text-muted-foreground"
-                      style={{ display: "grid", gridTemplateColumns: `repeat(${node.tableColumns.length}, minmax(0, 1fr))` }}
+                      style={{
+                        display: "grid",
+                        gridTemplateColumns: `repeat(${node.tableColumns.length}, minmax(${TABLE_COLUMN_MIN_WIDTH}px, 1fr))`,
+                      }}
                     >
                       {node.tableColumns.map((column, columnIndex) => (
                         <div
@@ -1448,7 +1680,10 @@ function InfiniteCanvas() {
                     </div>
                     <div
                       className="text-sm text-muted-foreground"
-                      style={{ display: "grid", gridTemplateColumns: `repeat(${node.tableColumns.length}, minmax(0, 1fr))` }}
+                      style={{
+                        display: "grid",
+                        gridTemplateColumns: `repeat(${node.tableColumns.length}, minmax(${TABLE_COLUMN_MIN_WIDTH}px, 1fr))`,
+                      }}
                     >
                       {node.tableRows.flatMap((row, rowIndex) =>
                         row.map((cell, columnIndex) => (
@@ -1486,6 +1721,7 @@ function InfiniteCanvas() {
                     )}
                     <button
                       type="button"
+                      aria-label="Add list item"
                       onPointerDown={(event) => event.stopPropagation()}
                       onClick={(event) => {
                         event.stopPropagation()
@@ -1494,7 +1730,7 @@ function InfiniteCanvas() {
                           tableRows: [...current.tableRows, ["new item"]],
                         }))
                       }}
-                      className="rounded-md border border-border/70 px-1.5 py-0.5 text-[10px] text-muted-foreground hover:bg-muted"
+                      className="rounded-md border border-border/70 px-1.5 py-0.5 text-[10px] text-muted-foreground hover:bg-muted focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
                     >
                       +
                     </button>
@@ -1516,6 +1752,7 @@ function InfiniteCanvas() {
                         <div className="flex shrink-0 flex-col gap-1">
                           <button
                             type="button"
+                            aria-label="Move row up"
                             onPointerDown={(event) => event.stopPropagation()}
                             onClick={(event) => {
                               event.stopPropagation()
@@ -1531,13 +1768,14 @@ function InfiniteCanvas() {
                                 return { ...current, tableRows: nextRows }
                               })
                             }}
-                            className="rounded-md border border-border/70 px-1.5 py-0.5 text-[10px] text-muted-foreground hover:bg-muted disabled:cursor-not-allowed disabled:opacity-40"
+                            className="rounded-md border border-border/70 px-1.5 py-0.5 text-[10px] text-muted-foreground hover:bg-muted focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-40"
                             disabled={rowIndex === 0}
                           >
                             up
                           </button>
                           <button
                             type="button"
+                            aria-label="Move row down"
                             onPointerDown={(event) => event.stopPropagation()}
                             onClick={(event) => {
                               event.stopPropagation()
@@ -1553,7 +1791,7 @@ function InfiniteCanvas() {
                                 return { ...current, tableRows: nextRows }
                               })
                             }}
-                            className="rounded-md border border-border/70 px-1.5 py-0.5 text-[10px] text-muted-foreground hover:bg-muted disabled:cursor-not-allowed disabled:opacity-40"
+                            className="rounded-md border border-border/70 px-1.5 py-0.5 text-[10px] text-muted-foreground hover:bg-muted focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-40"
                             disabled={rowIndex === node.tableRows.length - 1}
                           >
                             down
@@ -1616,7 +1854,11 @@ function InfiniteCanvas() {
                             left: `${x}px`,
                             top: `${y}px`,
                             backgroundColor: node.backgroundColor,
-                            ...getNodeTextStyle(node),
+                            ...getNodeTextStyleForField(node, {
+                              kind: "diagram-node",
+                              nodeId: node.id,
+                              nodeIndex,
+                            }),
                           }}
                         >
                           {renderEditableText(
@@ -1634,7 +1876,10 @@ function InfiniteCanvas() {
                     className="absolute left-1/2 top-1/2 flex size-28 -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-full border border-border/80 p-4 text-center shadow-lg backdrop-blur"
                     style={{
                       backgroundColor: node.backgroundColor,
-                      ...getNodeTextStyle(node),
+                      ...getNodeTextStyleForField(node, {
+                        kind: "diagram-center",
+                        nodeId: node.id,
+                      }),
                     }}
                   >
                     {renderEditableText(
@@ -1649,12 +1894,12 @@ function InfiniteCanvas() {
               )}
 
               {selectedNodeIds.includes(node.id) && (
-                <button
-                  type="button"
-                  aria-label="Resize card"
-                  className="absolute -bottom-2 -right-2 z-10 h-4 w-4 cursor-se-resize rounded-sm border border-border bg-background shadow-sm"
-                  onPointerDown={(event) => handleResizePointerDown(event, node)}
-                />
+              <button
+                type="button"
+                aria-label="Resize card"
+                className="absolute -bottom-2 -right-2 z-10 h-4 w-4 cursor-se-resize rounded-sm border border-border bg-background shadow-sm focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+                onPointerDown={(event) => handleResizePointerDown(event, node)}
+              />
               )}
             </div>
           ))}
@@ -1718,8 +1963,8 @@ function InfiniteCanvas() {
         )}
 
         <div className="absolute left-5 top-5 z-10" onPointerDown={stopCanvasPan}>
-          <details className="rounded-xl border border-border/70 bg-background/90 shadow-md backdrop-blur">
-            <summary className="flex cursor-pointer list-none items-center gap-2 px-3 py-2 text-[10px] font-medium uppercase tracking-[0.18em] text-muted-foreground">
+          <details className="rounded-xl border border-border/70 bg-background/90 shadow-md backdrop-blur" aria-label="Grid and view settings">
+            <summary className="flex cursor-pointer list-none items-center gap-2 px-3 py-2 text-[10px] font-medium uppercase tracking-[0.18em] text-muted-foreground focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 rounded-lg">
               <SettingsIcon />
               <span>settings</span>
             </summary>
@@ -1736,7 +1981,8 @@ function InfiniteCanvas() {
                       type: event.target.value as GridSettings["type"],
                     }))
                   }
-                  className="h-8 w-full rounded-lg border border-border bg-background px-2 text-sm outline-none"
+                  className="h-8 w-full rounded-lg border border-border bg-background px-2 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+                  aria-label="Grid type"
                 >
                   <option value="square">squared</option>
                   <option value="rounded">rounded</option>
@@ -1755,7 +2001,8 @@ function InfiniteCanvas() {
                     onChange={(event) =>
                       setGrid((current) => ({ ...current, color: event.target.value }))
                     }
-                    className="h-8 w-full rounded-lg border border-border bg-transparent p-1"
+                    className="h-8 w-full rounded-lg border border-border bg-transparent p-1 focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+                    aria-label="Grid color"
                   />
                 </label>
 
@@ -1774,7 +2021,8 @@ function InfiniteCanvas() {
                         distance: clamp(Number(event.target.value) || current.distance, 10, 220),
                       }))
                     }
-                    className="h-8 w-full rounded-lg border border-border bg-background px-2 text-sm outline-none"
+                    className="h-8 w-full rounded-lg border border-border bg-background px-2 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+                    aria-label="Grid distance"
                   />
                 </label>
 
@@ -1793,7 +2041,8 @@ function InfiniteCanvas() {
                         steps: clamp(Number(event.target.value) || current.steps, 2, 16),
                       }))
                     }
-                    className="h-8 w-full rounded-lg border border-border bg-background px-2 text-sm outline-none"
+                    className="h-8 w-full rounded-lg border border-border bg-background px-2 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+                    aria-label="Grid steps"
                   />
                 </label>
 
@@ -1813,7 +2062,8 @@ function InfiniteCanvas() {
                         opacity: clamp(Number(event.target.value), 0.08, 1),
                       }))
                     }
-                    className="h-8 w-full accent-foreground"
+                    className="h-8 w-full accent-foreground focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+                    aria-label="Grid opacity"
                   />
                 </label>
 
@@ -1833,19 +2083,21 @@ function InfiniteCanvas() {
                         thickness: clamp(Number(event.target.value), 0.5, 3),
                       }))
                     }
-                    className="h-8 w-full accent-foreground"
+                    className="h-8 w-full accent-foreground focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+                    aria-label="Grid line thickness"
                   />
                 </label>
               </div>
 
               <button
                 type="button"
+                aria-label="Reset grid and zoom"
                 onClick={() => {
                   setOffset({ x: 0, y: 0 })
                   setGrid(DEFAULT_GRID)
                   setZoom(1)
                 }}
-                className="inline-flex h-8 items-center justify-center rounded-lg border border-border bg-background px-3 text-xs font-medium text-foreground transition hover:bg-muted"
+                className="inline-flex h-8 items-center justify-center rounded-lg border border-border bg-background px-3 text-xs font-medium text-foreground transition hover:bg-muted focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
               >
                 reset
               </button>
@@ -1858,11 +2110,12 @@ function InfiniteCanvas() {
             <button
               key={tool}
               type="button"
+              aria-label={`Selection tool: ${tool === "square" ? "rectangle" : tool === "circle" ? "ellipse" : "free draw"}`}
               onClick={() => setSelectionTool(tool)}
               className={
                 selectionTool === tool
-                  ? "rounded-xl border border-sky-500/60 bg-sky-500/10 px-3 py-2 text-[11px] font-medium uppercase tracking-[0.14em] text-sky-600 shadow-sm backdrop-blur"
-                  : "rounded-xl border border-border/70 bg-background/90 px-3 py-2 text-[11px] font-medium uppercase tracking-[0.14em] text-muted-foreground shadow-sm backdrop-blur transition hover:bg-muted"
+                  ? "rounded-xl border border-sky-500/60 bg-sky-500/10 px-3 py-2 text-[11px] font-medium uppercase tracking-[0.14em] text-sky-600 shadow-sm backdrop-blur focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+                  : "rounded-xl border border-border/70 bg-background/90 px-3 py-2 text-[11px] font-medium uppercase tracking-[0.14em] text-muted-foreground shadow-sm backdrop-blur transition hover:bg-muted focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
               }
             >
               {`select_${tool}`}
@@ -1948,7 +2201,8 @@ function InfiniteCanvas() {
                   onChange={(event) =>
                     updateSelectedNode({ autoSize: event.target.value === "content" })
                   }
-                  className="h-9 w-full rounded-lg border border-border bg-background px-2 text-sm outline-none"
+                  className="h-9 w-full rounded-lg border border-border bg-background px-2 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+                  aria-label="Size mode"
                 >
                   <option value="content">content-size</option>
                   <option value="manual">manual</option>
@@ -1965,7 +2219,8 @@ function InfiniteCanvas() {
                   onChange={(event) =>
                     updateSelectedNode({ backgroundColor: event.target.value })
                   }
-                  className="h-9 w-full rounded-lg border border-border bg-transparent p-1"
+                  className="h-9 w-full rounded-lg border border-border bg-transparent p-1 focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+                  aria-label="Background color"
                 />
               </label>
 
@@ -1982,64 +2237,148 @@ function InfiniteCanvas() {
                   onChange={(event) =>
                     updateSelectedNode({ opacity: clamp(Number(event.target.value), 0.1, 1) })
                   }
-                  className="h-9 w-full accent-foreground"
+                  className="h-9 w-full accent-foreground focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+                  aria-label="Card opacity"
                 />
               </label>
 
-              <label className="space-y-1">
-                <span className="text-[10px] uppercase tracking-[0.14em] text-muted-foreground">
-                  text_color
-                </span>
-                <input
-                  type="color"
-                  value={selectedNode.textColor}
-                  onChange={(event) =>
-                    updateSelectedNode({ textColor: event.target.value })
-                  }
-                  className="h-9 w-full rounded-lg border border-border bg-transparent p-1"
-                />
-              </label>
+              <div className="col-span-2 border-t border-border/60 pt-3">
+                <p className="mb-2 text-[10px] font-medium uppercase tracking-[0.14em] text-muted-foreground">
+                  title
+                </p>
+                <div className="grid grid-cols-3 gap-2">
+                  <label className="space-y-1">
+                    <span className="text-[10px] uppercase tracking-[0.12em] text-muted-foreground">
+                      color
+                    </span>
+                    <input
+                      type="color"
+                      value={selectedNode.titleTextColor ?? selectedNode.textColor}
+                      onChange={(event) =>
+                        updateSelectedNode({ titleTextColor: event.target.value })
+                      }
+                      className="h-9 w-full rounded-lg border border-border bg-transparent p-1 focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+                      aria-label="Title text color"
+                    />
+                  </label>
+                  <label className="space-y-1">
+                    <span className="text-[10px] uppercase tracking-[0.12em] text-muted-foreground">
+                      size
+                    </span>
+                    <input
+                      type="number"
+                      min={10}
+                      max={32}
+                      value={selectedNode.titleTextSize ?? selectedNode.textSize}
+                      onChange={(event) =>
+                        updateSelectedNode({
+                          titleTextSize: clamp(
+                            Number(event.target.value) ||
+                              (selectedNode.titleTextSize ?? selectedNode.textSize),
+                            10,
+                            32
+                          ),
+                        })
+                      }
+                      className="h-9 w-full rounded-lg border border-border bg-background px-2 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+                      aria-label="Title text size"
+                    />
+                  </label>
+                  <label className="space-y-1">
+                    <span className="text-[10px] uppercase tracking-[0.12em] text-muted-foreground">
+                      weight
+                    </span>
+                    <input
+                      type="number"
+                      min={300}
+                      max={800}
+                      step={100}
+                      value={selectedNode.titleTextWeight ?? selectedNode.textWeight}
+                      onChange={(event) =>
+                        updateSelectedNode({
+                          titleTextWeight: clamp(
+                            Number(event.target.value) ||
+                              (selectedNode.titleTextWeight ?? selectedNode.textWeight),
+                            300,
+                            800
+                          ),
+                        })
+                      }
+                      className="h-9 w-full rounded-lg border border-border bg-background px-2 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+                      aria-label="Title text weight"
+                    />
+                  </label>
+                </div>
+              </div>
 
-              <label className="space-y-1">
-                <span className="text-[10px] uppercase tracking-[0.14em] text-muted-foreground">
-                  text_size
-                </span>
-                <input
-                  type="number"
-                  min={10}
-                  max={32}
-                  value={selectedNode.textSize}
-                  onChange={(event) =>
-                    updateSelectedNode({
-                      textSize: clamp(Number(event.target.value) || selectedNode.textSize, 10, 32),
-                    })
-                  }
-                  className="h-9 w-full rounded-lg border border-border bg-background px-2 text-sm outline-none"
-                />
-              </label>
-
-              <label className="space-y-1">
-                <span className="text-[10px] uppercase tracking-[0.14em] text-muted-foreground">
-                  text_weight
-                </span>
-                <input
-                  type="number"
-                  min={300}
-                  max={800}
-                  step={100}
-                  value={selectedNode.textWeight}
-                  onChange={(event) =>
-                    updateSelectedNode({
-                      textWeight: clamp(
-                        Number(event.target.value) || selectedNode.textWeight,
-                        300,
-                        800
-                      ),
-                    })
-                  }
-                  className="h-9 w-full rounded-lg border border-border bg-background px-2 text-sm outline-none"
-                />
-              </label>
+              <div className="col-span-2 border-t border-border/60 pt-3">
+                <p className="mb-2 text-[10px] font-medium uppercase tracking-[0.14em] text-muted-foreground">
+                  body
+                </p>
+                <div className="grid grid-cols-3 gap-2">
+                  <label className="space-y-1">
+                    <span className="text-[10px] uppercase tracking-[0.12em] text-muted-foreground">
+                      color
+                    </span>
+                    <input
+                      type="color"
+                      value={selectedNode.bodyTextColor ?? selectedNode.textColor}
+                      onChange={(event) =>
+                        updateSelectedNode({ bodyTextColor: event.target.value })
+                      }
+                      className="h-9 w-full rounded-lg border border-border bg-transparent p-1 focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+                      aria-label="Body text color"
+                    />
+                  </label>
+                  <label className="space-y-1">
+                    <span className="text-[10px] uppercase tracking-[0.12em] text-muted-foreground">
+                      size
+                    </span>
+                    <input
+                      type="number"
+                      min={10}
+                      max={32}
+                      value={selectedNode.bodyTextSize ?? selectedNode.textSize}
+                      onChange={(event) =>
+                        updateSelectedNode({
+                          bodyTextSize: clamp(
+                            Number(event.target.value) ||
+                              (selectedNode.bodyTextSize ?? selectedNode.textSize),
+                            10,
+                            32
+                          ),
+                        })
+                      }
+                      className="h-9 w-full rounded-lg border border-border bg-background px-2 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+                      aria-label="Body text size"
+                    />
+                  </label>
+                  <label className="space-y-1">
+                    <span className="text-[10px] uppercase tracking-[0.12em] text-muted-foreground">
+                      weight
+                    </span>
+                    <input
+                      type="number"
+                      min={300}
+                      max={800}
+                      step={100}
+                      value={selectedNode.bodyTextWeight ?? selectedNode.textWeight}
+                      onChange={(event) =>
+                        updateSelectedNode({
+                          bodyTextWeight: clamp(
+                            Number(event.target.value) ||
+                              (selectedNode.bodyTextWeight ?? selectedNode.textWeight),
+                            300,
+                            800
+                          ),
+                        })
+                      }
+                      className="h-9 w-full rounded-lg border border-border bg-background px-2 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+                      aria-label="Body text weight"
+                    />
+                  </label>
+                </div>
+              </div>
 
               <label className="space-y-1">
                 <span className="text-[10px] uppercase tracking-[0.14em] text-muted-foreground">
@@ -2052,7 +2391,7 @@ function InfiniteCanvas() {
                   value={selectedNode.width}
                   onChange={(event) =>
                     updateSelectedNode((() => {
-                      const minSize = getNodeContentMinSize(selectedNode)
+                      const minSize = getNodeResizeMinSize(selectedNode)
                       return {
                         width: clamp(
                           Number(event.target.value) || selectedNode.width,
@@ -2063,7 +2402,8 @@ function InfiniteCanvas() {
                       }
                     })())
                   }
-                  className="h-9 w-full rounded-lg border border-border bg-background px-2 text-sm outline-none"
+                  className="h-9 w-full rounded-lg border border-border bg-background px-2 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+                  aria-label="Width"
                 />
               </label>
 
@@ -2078,7 +2418,7 @@ function InfiniteCanvas() {
                   value={selectedNode.height}
                   onChange={(event) =>
                     updateSelectedNode((() => {
-                      const minSize = getNodeContentMinSize(selectedNode)
+                      const minSize = getNodeResizeMinSize(selectedNode)
                       return {
                         height: clamp(
                           Number(event.target.value) || selectedNode.height,
@@ -2089,7 +2429,8 @@ function InfiniteCanvas() {
                       }
                     })())
                   }
-                  className="h-9 w-full rounded-lg border border-border bg-background px-2 text-sm outline-none"
+                  className="h-9 w-full rounded-lg border border-border bg-background px-2 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+                  aria-label="Height"
                 />
               </label>
             </div>
@@ -2113,8 +2454,9 @@ function InfiniteCanvas() {
                 <button
                   key={option.type}
                   type="button"
+                  aria-label={`Create ${option.label}`}
                   onClick={() => createNode(option.type)}
-                  className="flex w-full items-center rounded-xl px-3 py-2 text-left text-sm text-foreground transition hover:bg-muted"
+                  className="flex w-full items-center rounded-xl px-3 py-2 text-left text-sm text-foreground transition hover:bg-muted focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
                 >
                   {option.label}
                 </button>

@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react"
-import { buttonVariants } from "@/components/ui/button"
+import { buttonVariants } from "@/components/ui/button-variants"
 import { cn } from "@/lib/utils"
 
 const links = [
@@ -73,7 +73,7 @@ function getPreferredTheme() {
 
 function Nav() {
   const [activeHref, setActiveHref] = useState(getPathname())
-  const [theme, setTheme] = useState<"light" | "dark">(getPreferredTheme)
+  const [theme, setTheme] = useState<"light" | "dark">(getPreferredTheme())
 
   useEffect(() => {
     const handlePopstate = () => {
